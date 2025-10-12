@@ -13,13 +13,35 @@ from O365.utils import FileSystemTokenBackend
 
 credentials = ( os.environ["MICROSOFT_CLIENT_ID"],  os.environ["MICROSOFT_CLIENT_SECRET"])
 
-account = Account(credentials)
-if account.authenticate(scopes=['basic', 'message_all'], redirect_uri='http://localhost:8080'):
-   print('Authenticated!')
+TOKEN_FILE = 'o365_token_public.txt' # File to store the cached token
+
+# Initialize the FileSystemTokenBackend to manage caching
+token_backend = FileSystemTokenBackend(token_filename=TOKEN_FILE)
+
+# Initialize the Account. Passing only the client ID implies a Public Client.
+account = Account(
+    credentials, # Client secret is omitted or explicitly set to None
+    scopes=['basic', 'message_all'],
+    token_backend=token_backend
+)
 
 
+if account.is_authenticated:
+    print("Authenticated successfully using cached token.")
 
-# If authentication fails, delete 'o365_token.txt' and rerun.
+else:
+    # 2. Perform the initial interactive login (Authorization Code Flow)
+    print("Starting interactive authentication flow...")
+    
+    # This will open a browser for the user to log in and give consent.
+    # The resulting URL/code is automatically processed by the library.
+    if account.authenticate(redirect_uri='http://localhost:8080'):
+        print("Initial interactive authentication successful. Token saved for future use.")
+    else:
+        print("Authentication failed.")
+        exit()
+
+
 # 🛑 IMPORTANT: If you change these scopes, delete the 'token.pickle' file!
 # 'readonly' scope allows viewing, but not editing, events.
 SCOPES = ['https://www.googleapis.com/auth/calendar'] 
@@ -135,30 +157,6 @@ def add_event(event_list: list[dict[str, str]], calendar_id:str) ->None:
             print("Please check your authorization scope (needs write access) and calendar ID.")
 
 
-def list_emails():
-    TARGET_EMAIL = 'rdobisek@outlook.com'
-    mailbox = account.mailbox(resource=TARGET_EMAIL)    
-
-    # Get the Inbox folder
-    inbox = mailbox.inbox_folder()
-
-    # Retrieve messages from the Inbox. 
-    # get_messages() returns an iterator of Message objects.
-    # You can use 'limit' to restrict the number of messages fetched.
-    print("Fetching messages from Inbox...")
-    messages = inbox.get_messages(limit=10) # Get up to the 10 newest messages
-
-    # Iterate through the messages and print their details
-    for message in messages:
-        print("-" * 50)
-        print(f"Subject: {message.subject}")
-        print(f"From: {message.sender.address}")
-        print(f"Received: {message.received}")
-        print(f"Is Read: {message.is_read}")
-        
-        # Get the plain text body (or HTML body)
-        print("\nBody Snippet:")
-        print(message.body_preview)
 
 
 
@@ -188,39 +186,47 @@ Here is an example output (keep the field names the same as in the example):
 chat=model.start_chat(enable_automatic_function_calling=True)
 
 
-list_emails()
-'''try:
-    service = get_calendar_service()
-    calId = get_calendar_id(calendarName)
+mailbox = account.mailbox(resource=os.environ['TARGET_EMAIL'])    
 
-    email = open('email.txt', 'r')
+# Get the Inbox folder
+inbox = mailbox.inbox_folder()
 
-    print(get_date())
-    prompt = email.read() + f"\nThe current date and time is {get_date()}"
-    print("-"*30)
-    print(prompt)
-    print("-"*30)
-    email.close()
-    result = chat.send_message(prompt)
-    text = result.text
-    if text[0] == '`':
-        text = text[7:-3]
-    text =text.strip()
-    if text.startswith('{"events":'):
-        text = text.removeprefix('{"events":').removesuffix('}').strip()
-    print(text)
-    print("-"*30)
-    event_list = parse_output(text)
-    for event in event_list:
-        print(event)
-        print('\n')
-    print("-"*30)
-    add_event(event_list, calId)
-except FileNotFoundError:
-    print(f"\n[ERROR] The file '{CREDENTIALS_FILE}' was not found.")
-    print("Please ensure your downloaded OAuth JSON file is in the same directory and named correctly.")
-except Exception as e:
-    print(f"\nAn unexpected error occurred: {e}")'''
+# Retrieve messages from the Inbox. 
+# get_messages() returns an iterator of Message objects.
+# You can use 'limit' to restrict the number of messages fetched.
+print("Fetching messages from Inbox...")
+messages = inbox.get_messages(limit=10) # Get up to the 10 newest messages
+
+# Iterate through the messages and print their details
+service = get_calendar_service()
+calId = get_calendar_id(calendarName)
+for message in messages:
+    try:
+        chat = model.start_chat(enable_automatic_function_calling=True)
+        prompt = message.get_body_text() + f"\nThe current date and time is {message.received}"
+        print("-"*30)
+        print(prompt)
+        print("-"*30)
+        result = chat.send_message(prompt)
+        text = result.text
+        if text[0] == '`':
+            text = text[7:-3]
+        text =text.strip()
+        if text.startswith('{"events":'):
+            text = text.removeprefix('{"events":').removesuffix('}').strip()
+        print(text)
+        print("-"*30)
+        event_list = parse_output(text)
+        for event in event_list:
+            print(event)
+            print('\n')
+        print("-"*30)
+        add_event(event_list, calId)
+    except FileNotFoundError:
+        print(f"\n[ERROR] The file '{CREDENTIALS_FILE}' was not found.")
+        print("Please ensure your downloaded OAuth JSON file is in the same directory and named correctly.")
+    except Exception as e:
+        print(f"\nAn unexpected error occurred: {e}")
 
 
 '''history = ""
