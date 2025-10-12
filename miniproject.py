@@ -80,6 +80,7 @@ def get_date() ->str:
     print("-"*30)
 
     return date_and_time.strftime("%A, %B %d, %Y at %I:%M %p") + f" The current timezone is {local_tzname}."
+
 def get_calendar_service():
     """
     Handles the authentication flow and returns the Google Calendar API service object.
@@ -113,9 +114,12 @@ def get_calendar_service():
     return service
 
 def parse_output(out:str) -> list[dict[str, str]]:
+    '''
+    Converts the json returned by the AI to a list of dictionaries representing the events, for the google calendar API.
+    '''
     try:
         event_dict = json.loads(out)
-        if(type(event_dict) == dict[str, str]):
+        if(type(event_dict) == dict):
             event_dict = [event_dict]
     
     except json.JSONDecodeError as e:
@@ -126,6 +130,9 @@ def parse_output(out:str) -> list[dict[str, str]]:
 
 
 def get_calendar_id(name:str) ->str:
+    '''
+    Gets the google_id of the callendar called 'name'
+    '''
     calendar_list = service.calendarList().list().execute()
 
 
@@ -140,6 +147,9 @@ def get_calendar_id(name:str) ->str:
         print(f"The calendar {c['summary']} has the id: {c['id']}")
 
 def add_event(event_list: list[dict[str, str]], calendar_id:str) ->None:
+    '''
+    Adds all events in event_list to the google calendar represented by calendar_id
+    '''
     for event_body in event_list:
         print(f"\nTrying event {event_body['summary']}")
         try:
@@ -160,12 +170,13 @@ def add_event(event_list: list[dict[str, str]], calendar_id:str) ->None:
 
 
 
-model = genai.GenerativeModel('gemini-2.5-flash-lite', tools=[get_date], system_instruction='''
+model = genai.GenerativeModel('gemini-2.5-flash-lite', system_instruction='''
 You are a summarizer. You will recieve an email and your goal is to provide the data of all events, that the email mentions in a format, that will then get passed on to google calendar.
 Return the answer as a list if events in JSON. Do not include the any formatting, such as "\'\'\'json". Do not include anything other, than the JSON. Do it in one shot, do not ask follow up questions. 
-If there is no date, use today's. If information is not provided, write not provided. Do not ask the user for clarification, check the year using get_date.
+If there is no date, use today's. If information is not provided, write not provided. Do not ask the user for clarification, the date and year are provided in the email.
 If no end time is specified assume the event takes an hour. If something is missing, do not include it in the JSON.
 Only include a list of events, do not store evrything in a dictionary, with the key "events".
+Keep the description field short. A max of a few sentences.
 Here is an example output (keep the field names the same as in the example):
 {
     "summary" : "Test event",
