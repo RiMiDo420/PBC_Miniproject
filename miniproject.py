@@ -1,19 +1,57 @@
-import google.generativeai as genai
+"""
+Email to Calendar Assistant 📧📅
+
+This module implements a desktop application using Tkinter to automate the process
+of extracting event information from O365 emails using a Gemini LLM and scheduling
+them into a Google Calendar.
+
+It handles:
+1.  **Authentication:** Interactive OAuth2 flows for both Microsoft (O365) and Google 
+    Calendar services, caching tokens for future runs.
+2.  **Email Fetching:** Retrieves recent emails from a specified O365 mailbox.
+3.  **LLM Integration:** Uses the Gemini 2.5 Flash Lite model with a specific 
+    system instruction to parse email body text and output structured JSON event data.
+4.  **Calendar Integration:** Connects to the Google Calendar API to insert the 
+    parsed events into a designated calendar.
+5.  **GUI:** Provides a simple, thread-safe graphical interface for selecting emails, 
+    initiating the scanning process, and logging the application's activity.
+
+Dependencies:
+- google-genai
+- google-api-python-client
+- google-auth-oauthlib
+- O365
+- tkinter (built-in)
+
+Environment Variables Required:
+- MICROSOFT_CLIENT_ID
+- MICROSOFT_CLIENT_SECRET
+- TARGET_EMAIL (for O365 mailbox)
+- GOOGLE_API_KEY
+"""
+
 import os
-import datetime
 import os.path
+import datetime
 import pickle
 import json
+import textwrap
+import tkinter as tk
+from tkinter import ttk, scrolledtext
+from threading import Thread
+
+import google.generativeai as genai
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from O365 import Account, Connection
-from O365.utils import FileSystemTokenBackend
-import textwrap
-import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
-from threading import Thread
 
+from O365 import Account
+from O365.utils import FileSystemTokenBackend
+
+# Sets the name of the caledndar, to which the events will be pushed
+# This calendar must be a calendar you have already started in your google account
+# Otherwise it will list your calendars in the console, but will not work
+CALENDAR_NAME = "PBC_AI2"
 
 credentials = (os.environ["MICROSOFT_CLIENT_ID"], os.environ["MICROSOFT_CLIENT_SECRET"])
 
@@ -45,27 +83,16 @@ else:
         )
     else:
         print("Authentication failed.")
-        exit()
+        sys.exit()
 
 
 # 🛑 IMPORTANT: If you change these scopes, delete the 'token.pickle' file!
-# 'readonly' scope allows viewing, but not editing, events.
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
-CREDENTIALS_FILE = "credentials.json"  # Rename your downloaded file if necessary
+CREDENTIALS_FILE = "credentials.json"
 
-# Best practice to load key from environment variable
-# In your terminal:
-# export GOOGLE_API_KEY='Your-API-Key'
 genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 
-calendarName = "PBC_AI"
-testEvent = {
-    "summary": "Test event",
-    "location": "Trinity college, Cambridge",
-    "description": "test",
-    "start": {"dateTime": "2025-10-11T15:00:00+01:00", "timeZone": "Europe/London"},
-    "end": {"dateTime": "2025-10-11T16:00:00+01:00", "timeZone": "Europe/London"},
-}
+
 
 
 def get_date() -> str:
@@ -113,23 +140,24 @@ def get_calendar_service():
             pickle.dump(creds, token)
 
     # 4. Build the API service object
-    service = build("calendar", "v3", credentials=creds)
-    return service
+    s = build("calendar", "v3", credentials=creds)
+    return s
 
 
 def parse_output(out: str) -> list[dict[str, str]]:
     """
-    Converts the json returned by the AI to a list of dictionaries representing the events, for the google calendar API.
+    Converts the json returned by the AI to a list of dictionaries representing the events, 
+    for the google calendar API.
     """
     try:
         event_dict = json.loads(out)
-        if type(event_dict) == dict:
+        if isinstance(event_dict, dict):
             event_dict = [event_dict]
 
     except json.JSONDecodeError as e:
         print(f"Error decoding JSON: {e}")
         # Handle the error, e.g., by exiting the function
-        event_dict = None
+        event_dict = []
     return event_dict
 
 
@@ -150,6 +178,8 @@ def get_calendar_id(name: str) -> str:
 
     for c in calendars:
         print(f"The calendar {c['summary']} has the id: {c['id']}")
+
+CALENDAR_ID = get_calendar_id(CALENDAR_NAME)
 
 
 def add_event(app_instance, event_body: dict[str, str], calendar_id: str) -> None:
@@ -219,7 +249,10 @@ Here is an example output (keep the field names the same as in the example):
 )
 
 
-def extract_events_with_llm(app_instance, prompt):
+def extract_events_with_llm(app_instance, prompt:str) -> list[dict[str, str]]:
+    '''
+    Extracts events from email text, using an LLM
+    '''
     chat = model.start_chat(enable_automatic_function_calling=True)
 
     result = chat.send_message(prompt)
@@ -235,6 +268,7 @@ def extract_events_with_llm(app_instance, prompt):
     return event_list
 
 
+#old code for working without the vibecoded UI
 """chat=model.start_chat(enable_automatic_function_calling=True)
 
 
@@ -251,7 +285,7 @@ messages = inbox.get_messages(limit=10) # Get up to the 10 newest messages
 
 # Iterate through the messages and print their details
 service = get_calendar_service()
-calId = get_calendar_id(calendarName)
+calId = get_calendar_id(CALENDAR_NAME)
 for message in messages:
     try:
         chat = model.start_chat(enable_automatic_function_calling=True)
@@ -299,6 +333,9 @@ while(True):
 
 
 class EmailCalendarApp(tk.Tk):
+    '''
+    The thing, that handles the simple UI, idk I didn't write this, gemini did...
+    '''
     def __init__(self):
         super().__init__()
         self.title("Email to Calendar Assistant")
@@ -307,7 +344,6 @@ class EmailCalendarApp(tk.Tk):
         self.emails = []
         self.check_vars = []
 
-        self.calendar_id = get_calendar_id(calendarName)
 
         self.create_widgets()
         self.load_emails()
@@ -315,6 +351,9 @@ class EmailCalendarApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.quit_app)
 
     def create_widgets(self):
+        '''
+        ??? draws the UI I assume...
+        '''
         # Configure layout (two main frames: Emails/Controls and Log)
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -475,7 +514,7 @@ class EmailCalendarApp(tk.Tk):
 
                 for event in extracted_events:
                     # 2. Google Calendar Event Creation
-                    add_event(self, event, self.calendar_id)
+                    add_event(self, event, CALENDAR_ID)
                     total_events_created += 1
             else:
                 self.log_message("❌ No calendar events were extracted by the LLM.")
