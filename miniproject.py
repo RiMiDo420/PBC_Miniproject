@@ -9,6 +9,10 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from O365 import Account, Connection
 from O365.utils import FileSystemTokenBackend
+import textwrap
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox
+from threading import Thread 
 
 
 credentials = ( os.environ["MICROSOFT_CLIENT_ID"],  os.environ["MICROSOFT_CLIENT_SECRET"])
@@ -128,6 +132,7 @@ def parse_output(out:str) -> list[dict[str, str]]:
         event_dict = None
     return event_dict
 
+service = get_calendar_service()
 
 def get_calendar_id(name:str) ->str:
     '''
@@ -146,25 +151,43 @@ def get_calendar_id(name:str) ->str:
     for c in calendars:
         print(f"The calendar {c['summary']} has the id: {c['id']}")
 
-def add_event(event_list: list[dict[str, str]], calendar_id:str) ->None:
+def add_event(app_instance, event_body: dict[str, str], calendar_id:str) ->None:
     '''
     Adds all events in event_list to the google calendar represented by calendar_id
     '''
-    for event_body in event_list:
-        print(f"\nTrying event {event_body['summary']}")
-        try:
-            event_result = service.events().insert(
-            calendarId=calendar_id,
-            body=event_body
-            ).execute()
+    app_instance.log_message(f"\nTrying event {event_body['summary']}")
+    try:
+        event_result = service.events().insert(
+        calendarId=calendar_id,
+        body=event_body
+        ).execute()
 
-            print("\n✅ Event successfully created!")
-            print(f"Event ID: {event_result.get('id')}")
-            print(f"View on Calendar: {event_result.get('htmlLink')}")
+        app_instance.log_message("\n✅ Event successfully created!")
+        app_instance.log_message(f"Event ID: {event_result.get('id')}")
+        app_instance.log_message(f"View on Calendar: {event_result.get('htmlLink')}")
 
-        except Exception as e:
-            print(f"\n❌ ERROR inserting event: {e}")
-            print("Please check your authorization scope (needs write access) and calendar ID.")
+    except Exception as e:
+        app_instance.log_message(f"\n❌ ERROR inserting event: {e}")
+        app_instance.log_message("Please check your authorization scope (needs write access) and calendar ID.")
+
+def fetch_recent_emails_o365(app_instance, count=5):
+    """
+    Simulates fetching recent emails. Logs status to the GUI.
+    """
+    app_instance.log_message("--- (Simulating O365 Fetch) ---")
+    
+    mailbox = account.mailbox(resource=os.environ['TARGET_EMAIL'])    
+
+    # Get the Inbox folder
+    inbox = mailbox.inbox_folder()
+
+    # Retrieve messages from the Inbox. 
+    # get_messages() returns an iterator of Message objects.
+    # You can use 'limit' to restrict the number of messages fetched.
+    print("Fetching messages from Inbox...")
+    return inbox.get_messages(limit=count)
+
+    
 
 
 
@@ -194,7 +217,23 @@ Here is an example output (keep the field names the same as in the example):
 }
                                                                       ''')
 
-chat=model.start_chat(enable_automatic_function_calling=True)
+def extract_events_with_llm(app_instance, prompt):
+    chat=model.start_chat(enable_automatic_function_calling=True)
+
+    result = chat.send_message(prompt)
+    text = result.text
+    if text[0] == '`':
+        text = text[7:-3]
+    text =text.strip()
+    if text.startswith('{"events":'):
+        text = text.removeprefix('{"events":').removesuffix('}').strip()
+    app_instance.log_message(text)
+    app_instance.log_message("-"*30)
+    event_list = parse_output(text)
+    return event_list
+    
+
+'''chat=model.start_chat(enable_automatic_function_calling=True)
 
 
 mailbox = account.mailbox(resource=os.environ['TARGET_EMAIL'])    
@@ -238,7 +277,7 @@ for message in messages:
         print("Please ensure your downloaded OAuth JSON file is in the same directory and named correctly.")
     except Exception as e:
         print(f"\nAn unexpected error occurred: {e}")
-
+'''
 
 '''history = ""
 while(True):
@@ -257,3 +296,173 @@ while(True):
     print("-"*30)'''
 
 
+
+class EmailCalendarApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Email to Calendar Assistant")
+        self.geometry("800x600")
+        
+        self.emails = []
+        self.check_vars = []
+
+        self.calendar_id = get_calendar_id(calendarName)
+        
+        self.create_widgets()
+        self.load_emails()
+
+        self.protocol("WM_DELETE_WINDOW", self.quit_app)
+        
+    def create_widgets(self):
+        # Configure layout (two main frames: Emails/Controls and Log)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        
+        # Main Frame for Email Display and Controls
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.grid(row=0, column=0, sticky="nsew")
+        main_frame.grid_rowconfigure(0, weight=1)
+        main_frame.grid_columnconfigure(0, weight=1)
+        
+        # Email Display Frame (Scrollable area for checkboxes)
+        email_frame = ttk.LabelFrame(main_frame, text="Recent Emails (Select for Scanning)", padding="10")
+        email_frame.grid(row=0, column=0, sticky="nsew", pady=10)
+        email_frame.grid_rowconfigure(0, weight=1)
+        email_frame.grid_columnconfigure(0, weight=1)
+        
+        # Canvas and Scrollbar for email list
+        self.canvas = tk.Canvas(email_frame, borderwidth=0)
+        self.v_scrollbar = ttk.Scrollbar(email_frame, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = ttk.Frame(self.canvas)
+
+        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.v_scrollbar.set)
+        
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.v_scrollbar.grid(row=0, column=1, sticky="ns")
+        
+        self.scrollable_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        
+        # Control Button
+        self.scan_button = ttk.Button(main_frame, text="Scan Selected Emails to Calendar", command=self.start_scan_thread)
+        self.scan_button.grid(row=1, column=0, pady=10)
+        
+        # Log Frame
+        log_frame = ttk.LabelFrame(self, text="Application Log", padding="10")
+        log_frame.grid(row=1, column=0, sticky="nsew")
+        self.grid_rowconfigure(1, weight=0) # Log frame should not stretch vertically
+        
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, width=90, height=10, state='disabled')
+        self.log_text.pack(expand=True, fill='both')
+
+    def log_message(self, message):
+        """Adds a message to the log area safely from any thread."""
+        # Use self.after() to schedule the GUI update on the main thread
+        self.after(0, self._safe_log, message)
+
+    def _safe_log(self, message):
+        """Internal method executed safely on the main thread to update the GUI."""
+        # All GUI modifications must happen here
+        self.log_text.config(state='normal')
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.see(tk.END) # Scroll to bottom
+        self.log_text.config(state='disabled')
+        self.update() # Force up
+
+    def load_emails(self):
+        """Fetches emails and populates the scrollable frame with checkboxes."""
+        fetched_emails = fetch_recent_emails_o365(self)
+        self.emails = list(fetched_emails)
+        self.check_vars = []
+        
+        # Clear previous widgets
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+
+        if not self.emails:
+            ttk.Label(self.scrollable_frame, text="No emails found or failed to fetch.").pack(padx=5, pady=5, anchor="w")
+            return
+
+        for i, email in enumerate(self.emails):
+            var = tk.BooleanVar(value=False)
+            self.check_vars.append(var)
+            
+            # Create a label with the subject and a snippet
+            subject_text = f"[{i + 1}] {email.subject}"
+            snippet = textwrap.shorten(email.get_body_text().split('\n')[0], width=70, placeholder="...")
+            
+            # Use a Checkbutton to combine the selection and display
+            cb = ttk.Checkbutton(
+                self.scrollable_frame, 
+                text=f"{subject_text} - {snippet}",
+                variable=var,
+                command=self.update_selection_count
+            )
+            cb.pack(padx=5, pady=2, anchor="w")
+            
+        self.update_selection_count()
+
+    def quit_app(self):
+        """Cleanly closes the application window and stops the main loop."""
+        self.log_message("Application closing...")
+        self.destroy()
+
+    def update_selection_count(self):
+        """Updates the scan button text based on selection count."""
+        count = sum(var.get() for var in self.check_vars)
+        if count == 0:
+            self.scan_button.config(text="Scan Selected Emails to Calendar", state='disabled')
+        else:
+            self.scan_button.config(text=f"Scan {count} Email(s) to Calendar", state='normal')
+
+    def start_scan_thread(self):
+        """Starts the scanning process in a separate thread."""
+        self.scan_button.config(state='disabled', text="Processing...")
+        Thread(target=self.process_selected_emails).start()
+
+    def process_selected_emails(self):
+        """Handles the main logic for scanning, LLM extraction, and calendar insertion."""
+        
+        self.log_message("\n" + "=" * 50)
+        self.log_message("SCANNING STARTED")
+        self.log_message("=" * 50)
+        
+        selected_emails = [
+            self.emails[i] for i, var in enumerate(self.check_vars) if var.get()
+        ]
+
+        if not selected_emails:
+            self.log_message("No emails were selected for scanning.")
+            self.scan_button.config(state='normal', text="Scan Selected Emails to Calendar")
+            return
+
+        total_events_created = 0
+
+        for email in selected_emails:
+            self.log_message(f"\n--- Scanning Email: {email.subject} ---")
+            
+            # 1. LLM Event Extraction
+            extracted_events = extract_events_with_llm(self, email.get_body_text())
+
+            if extracted_events:
+                self.log_message(f"✅ Found {len(extracted_events)} potential event(s).")
+                
+                for event in extracted_events:
+                    # 2. Google Calendar Event Creation
+                    add_event(self, event, self.calendar_id)
+                    total_events_created += 1
+            else:
+                self.log_message("❌ No calendar events were extracted by the LLM.")
+
+        self.log_message("\n" + "=" * 50)
+        self.log_message(f"PROCESS COMPLETE. Total events scheduled: {total_events_created}")
+        self.log_message("=" * 50)
+        
+        # Reset GUI state
+        self.scan_button.config(state='normal', text="Scan Selected Emails to Calendar")
+        self.update_selection_count()
+
+
+if __name__ == "__main__":
+    app = EmailCalendarApp()
+    app.mainloop()
