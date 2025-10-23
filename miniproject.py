@@ -40,6 +40,8 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, simpledialog
 from threading import Thread
 import platform
+from dotenv import load_dotenv
+from zoneinfo import ZoneInfo
 
 import google.generativeai as genai
 from google.auth.transport.requests import Request
@@ -49,9 +51,68 @@ from googleapiclient.discovery import build
 from O365 import Account
 from O365.utils import FileSystemTokenBackend
 
+load_dotenv()
+
+
 # Sets the name of the caledndar, to which the events will be pushed
 # This calendar must be a calendar you have already started in your google account
 # Otherwise it will list your calendars in the console, but will not work
+
+event_schema ={
+  "type": "array",
+  "description": "A list of extracted calendar events with full datetime, timezone, location, and description.",
+  "items": {
+    "type": "object",
+    "description": "A single calendar event.",
+    "properties": {
+      "summary": {
+        "type": "string",
+        "description": "A brief, descriptive title for the event."
+      },
+      "start": {
+        "type": "object",
+        "description": "The starting datetime of the event.",
+        "properties": {
+          "dateTime": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The date and time in ISO 8601 format (e.g., YYYY-MM-DDTHH:MM:SS)."
+          },
+          "timeZone": {
+            "type": "string",
+            "description": "The IANA time zone identifier (e.g., 'America/Los_Angeles')."
+          }
+        },
+        "required": ["dateTime", "timeZone"]
+      },
+      "end": {
+        "type": "object",
+        "description": "The ending datetime of the event.",
+        "properties": {
+          "dateTime": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The date and time in ISO 8601 format (e.g., YYYY-MM-DDTHH:MM:SS)."
+          },
+          "timeZone": {
+            "type": "string",
+            "description": "The IANA time zone identifier (e.g., 'America/Los_Angeles')."
+          }
+        },
+        "required": ["dateTime", "timeZone"]
+      },
+      "location": {
+        "type": "string",
+        "description": "The physical or virtual location of the event (e.g., address, conference room, or video link)."
+      },
+      "description": {
+        "type": "string",
+        "description": "A detailed body or notes for the event, including context or agenda."
+      }
+    },
+    "required": ["summary", "start", "end"]
+  }
+}
 
 credentials = (os.environ["MICROSOFT_CLIENT_ID"], os.environ["MICROSOFT_CLIENT_SECRET"])
 
@@ -213,7 +274,6 @@ def fetch_recent_emails_o365(app_instance, count=10):
     print("Fetching messages from Inbox...")
     return inbox.get_messages(limit=count)
 
-
 model = genai.GenerativeModel(
     "gemini-2.5-flash-lite",
     system_instruction="""
@@ -222,9 +282,11 @@ Return the answer as a list if events in JSON. Do not include the any formatting
 If there is no date, use today's. If information is not provided, write not provided. Do not ask the user for clarification, the date and year are provided in the email.
 If no end time is specified assume the event takes an hour. If something is missing, do not include it in the JSON.
 Only include a list of events, do not store evrything in a dictionary, with the key "events".
+If there are multiple events, return the required items in a list.
 Keep the description field short. A max of a few sentences.
+We are currently in the +01:00 timezone, so make all the events in this timezone too
 Here is an example output (keep the field names the same as in the example):
-{
+ {
     "summary" : "Test event",
     "location": "Trinity college, Cambridge",
     "description": "test",
@@ -238,7 +300,7 @@ Here is an example output (keep the field names the same as in the example):
     },
 
 }
-                                                                      """,
+                                                                      """
 )
 
 
@@ -248,7 +310,13 @@ def extract_events_with_llm(app_instance, prompt:str) -> list[dict[str, str]]:
     '''
     chat = model.start_chat(enable_automatic_function_calling=True)
 
-    result = chat.send_message(prompt)
+    config = genai.types.GenerationConfig(
+    # Use the parameter name expected by the config object
+    response_mime_type="application/json", 
+    response_schema=event_schema,
+)   
+
+    result = chat.send_message(prompt, generation_config=config)
     text = result.text
     if text[0] == "`":
         text = text[7:-3]
@@ -333,7 +401,7 @@ class EmailCalendarApp(tk.Tk):
         self.check_vars = []
 
         self.email_limit = 10  # Default number of emails to fetch and display
-        self.calendar_id = "PBC_AI" # Current target calendar ID
+        self.calendar_id = "Select calendar..." # Current target calendar ID
         self.os_name = platform.system()
 
 
@@ -612,7 +680,7 @@ class EmailCalendarApp(tk.Tk):
             self.log_message(f"\n--- Scanning Email: {email.subject} ---")
 
             # 1. LLM Event Extraction
-            extracted_events = extract_events_with_llm(self, email.get_body_text())
+            extracted_events = extract_events_with_llm(self, email.get_body_text()+f"\nThe current date is {email.received.astimezone(ZoneInfo("Europe/London"))}. The timezone is {email.received.astimezone()}")
 
             if extracted_events:
                 self.log_message(
